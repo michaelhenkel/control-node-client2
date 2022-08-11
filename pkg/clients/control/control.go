@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/michaelhenkel/control-node-client2/pkg/schema"
 
@@ -36,17 +35,6 @@ func (c *Client) Watch(callbackChan chan api.PrefixCommunity) error {
 		msg = bytes.Trim(msg, "\x00")
 		c.handle(msg)
 		msg = make([]byte, 40960)
-	}
-	return nil
-}
-
-func (c *Client) keepAlive() error {
-	for {
-		_, err := c.conn.Write([]byte(".."))
-		if err != nil {
-			return err
-		}
-		time.Sleep(time.Second * 3)
 	}
 }
 
@@ -76,7 +64,7 @@ func (c *Client) endMessage(line string) string {
 func (c *Client) processMessage(msg string) {
 	msgObj := &schema.Message{}
 	if err := xml.Unmarshal([]byte(msg), msgObj); err != nil {
-
+		fmt.Println("err", err)
 	} else {
 		for _, item := range msgObj.Event.Items.Item {
 			if item.Entry.CommunityTagList.CommunityTag != "" {
@@ -88,6 +76,7 @@ func (c *Client) processMessage(msg string) {
 }
 
 func (c *Client) handle(message []byte) {
+	fmt.Println(string(message))
 	if message[0] == 200 && message[1] == 128 {
 		ka := []byte{message[0], message[1]}
 		c.Write(string(ka))

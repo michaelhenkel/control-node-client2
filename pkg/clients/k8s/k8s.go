@@ -35,14 +35,28 @@ const (
 	Error          = -1
 )
 
-func Watch(kubeConfigPath string, callBackChan chan api.VirtualNetworkCommunity) error {
+type Client struct {
+	KubernetesClientSet *kubernetes.Clientset
+	ContrailClientSet   *contrailClient.Clientset
+	dynamicClientSet    dynamic.Interface
+}
+
+func New(kubeConfigPath string) (*Client, error) {
 	config, err := get_config(kubeConfigPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	contrailClientSet, kubernetesClientSet, dynamicClientSet, _ := getClientSets(config)
+	return &Client{
+		KubernetesClientSet: kubernetesClientSet,
+		ContrailClientSet:   contrailClientSet,
+		dynamicClientSet:    dynamicClientSet,
+	}, nil
+}
+
+func (c *Client) Watch(serviceImportChan chan api.ServiceCommunity, serviceExportChan chan api.ServiceCommunity) error {
 	stopCh := make(chan struct{})
-	sifList, _ := NewSharedInformerFactory(kubernetesClientSet, contrailClientSet, dynamicClientSet, callBackChan)
+	sifList, _ := NewSharedInformerFactory(c.KubernetesClientSet, c.ContrailClientSet, c.dynamicClientSet, serviceImportChan, serviceExportChan)
 
 	for _, sif := range sifList {
 		sif.Start(stopCh)
@@ -88,7 +102,7 @@ func getClientSets(config *rest.Config) (*contrailClient.Clientset, *kubernetes.
 	return contrailClientSet, kubernetesClientSet, dynamicClientSet, nil
 }
 
-func NewSharedInformerFactory(kubernetesClientSet *kubernetes.Clientset, contrailClientSet *contrailClient.Clientset, dynamicClientSet dynamic.Interface, callBackChan chan api.VirtualNetworkCommunity) ([]dynamicinformer.DynamicSharedInformerFactory, error) {
+func NewSharedInformerFactory(kubernetesClientSet *kubernetes.Clientset, contrailClientSet *contrailClient.Clientset, dynamicClientSet dynamic.Interface, serviceImportChan chan api.ServiceCommunity, serviceExportChan chan api.ServiceCommunity) ([]dynamicinformer.DynamicSharedInformerFactory, error) {
 	var gvrList []schema.GroupVersionResource
 	gvrList = append(gvrList, schema.GroupVersionResource{
 		Group:    "",
@@ -114,15 +128,17 @@ func NewSharedInformerFactory(kubernetesClientSet *kubernetes.Clientset, contrai
 	for _, gvr := range gvrList {
 		sif := dynamicinformer.NewDynamicSharedInformerFactory(dynamicClientSet, time.Minute*10)
 		dynamicInformer := sif.ForResource(gvr)
-		dynamicInformer.Informer().AddEventHandler(resourceEventHandler(&watchHandlerFunc{callBackChan, contrailClientSet}))
+		dynamicInformer.Informer().AddEventHandler(resourceEventHandler(&watchHandlerFunc{serviceImportChan, serviceExportChan, contrailClientSet, kubernetesClientSet}))
 		sifList = append(sifList, sif)
 	}
 	return sifList, nil
 }
 
 type watchHandlerFunc struct {
-	callBackChan      chan api.VirtualNetworkCommunity
-	contrailClientSet *contrailClient.Clientset
+	serviceImportChan   chan api.ServiceCommunity
+	serviceExportChan   chan api.ServiceCommunity
+	contrailClientSet   *contrailClient.Clientset
+	kubernetesClientSet *kubernetes.Clientset
 }
 
 func (h *watchHandlerFunc) HandleEvent(event Event, obj *unstructured.Unstructured) error {
@@ -135,7 +151,7 @@ func (h *watchHandlerFunc) HandleEvent(event Event, obj *unstructured.Unstructur
 	case "Service":
 		service := &corev1.Service{}
 		runtime.DefaultUnstructuredConverter.FromUnstructured(obj.UnstructuredContent(), service)
-		handleService(service, h.callBackChan, h.contrailClientSet)
+		handleService(service, event, h.serviceImportChan, h.serviceExportChan, h.contrailClientSet, h.kubernetesClientSet)
 	default:
 		fmt.Println("not found")
 	}
@@ -151,52 +167,56 @@ func resourceEventHandler(handler WatchEventHandler) cache.ResourceEventHandler 
 		AddFunc: func(obj interface{}) {
 
 			u := obj.(*unstructured.Unstructured)
-			name, namefound, err := unstructured.NestedString(u.Object, "metadata", "name")
-			if err != nil {
-				fmt.Println(err)
-			}
+			/*
+				name, namefound, err := unstructured.NestedString(u.Object, "metadata", "name")
+				if err != nil {
+					fmt.Println(err)
+				}
 
-			rv, rvfound, err := unstructured.NestedString(u.Object, "metadata", "resourceVersion")
-			if err != nil {
-				fmt.Println(err)
-			}
 
-			kind, kindfound, err := unstructured.NestedString(u.Object, "kind")
-			if err != nil {
-				fmt.Println(err)
-			}
-			if namefound && kindfound && rvfound {
-				fmt.Println("add", kind, name, rv)
-			}
+					rv, rvfound, err := unstructured.NestedString(u.Object, "metadata", "resourceVersion")
+					if err != nil {
+						fmt.Println(err)
+					}
 
+					kind, kindfound, err := unstructured.NestedString(u.Object, "kind")
+					if err != nil {
+						fmt.Println(err)
+					}
+					if namefound && kindfound && rvfound {
+						fmt.Println("add", kind, name, rv)
+					}
+			*/
 			handler.HandleEvent(Add, u)
 
 		},
 		UpdateFunc: func(oldObj interface{}, newObj interface{}) {
-			uold := oldObj.(*unstructured.Unstructured)
+			//uold := oldObj.(*unstructured.Unstructured)
 			u := newObj.(*unstructured.Unstructured)
-			name, namefound, err := unstructured.NestedString(u.Object, "metadata", "name")
-			if err != nil {
-				fmt.Println(err)
-			}
+			/*
+				name, namefound, err := unstructured.NestedString(u.Object, "metadata", "name")
+				if err != nil {
+					fmt.Println(err)
+				}
 
-			rv, rvfound, err := unstructured.NestedString(u.Object, "metadata", "resourceVersion")
-			if err != nil {
-				fmt.Println(err)
-			}
+				rv, rvfound, err := unstructured.NestedString(u.Object, "metadata", "resourceVersion")
+				if err != nil {
+					fmt.Println(err)
+				}
 
-			oldrv, oldrvfound, err := unstructured.NestedString(uold.Object, "metadata", "resourceVersion")
-			if err != nil {
-				fmt.Println(err)
-			}
+				oldrv, oldrvfound, err := unstructured.NestedString(uold.Object, "metadata", "resourceVersion")
+				if err != nil {
+					fmt.Println(err)
+				}
 
-			kind, kindfound, err := unstructured.NestedString(u.Object, "kind")
-			if err != nil {
-				fmt.Println(err)
-			}
-			if namefound && kindfound && rvfound && oldrvfound {
-				fmt.Println("update", kind, name, rv, oldrv)
-			}
+				kind, kindfound, err := unstructured.NestedString(u.Object, "kind")
+				if err != nil {
+					fmt.Println(err)
+				}
+				if namefound && kindfound && rvfound && oldrvfound {
+					//fmt.Println("update", kind, name, rv, oldrv)
+				}
+			*/
 			handler.HandleEvent(Update, u)
 
 		},

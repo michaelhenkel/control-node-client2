@@ -1,9 +1,11 @@
 package schema
 
-type VirtualNetworkCommunity struct {
-	Name      string
-	Namespace string
-	Community string
+type ServiceCommunity struct {
+	VirtualNetworkName      string
+	VirtualNetworkNamespace string
+	Community               string
+	ServiceName             string
+	ServiceNamespace        string
 }
 
 type PrefixCommunity struct {
