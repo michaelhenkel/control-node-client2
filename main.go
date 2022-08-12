@@ -21,21 +21,24 @@ var msg2 = `<stream:stream from="worker-3" to="network-control@contrailsystems.c
 func main() {
 
 	stopChan := make(chan bool)
-	controlClient := control.NewClient("10.233.65.14:5269")
+	var controlCallBackChan = make(chan api.PrefixCommunity)
+	controlClient := control.NewClient("10.233.65.14:5269", controlCallBackChan)
+	controlClient.Write(msg2)
 	k8sClient, err := k8s.New("/home/mhenkel/admin.conf")
 	if err != nil {
 		panic(err)
 	}
 	var serviceImportChan = make(chan api.ServiceCommunity)
 	var serviceExportChan = make(chan api.ServiceCommunity)
-	var controlCallBackChan = make(chan api.PrefixCommunity)
-	var subscriberMap = make(map[api.ServiceCommunity]bool)
+
+	var subscriberMap = make(map[string]bool)
 
 	go func() {
 		fmt.Println("starting service import watch")
 		for serviceCommunity := range serviceImportChan {
-			if _, ok := subscriberMap[serviceCommunity]; !ok {
-				subscriberMap[serviceCommunity] = true
+			nameNamespace := fmt.Sprintf("%s/%s", serviceCommunity.VirtualNetworkNamespace, serviceCommunity.VirtualNetworkNamespace)
+			if _, ok := subscriberMap[nameNamespace]; !ok {
+				subscriberMap[nameNamespace] = true
 				msg := subscriptionMessage(serviceCommunity.VirtualNetworkName, serviceCommunity.VirtualNetworkNamespace)
 				controlClient.Write(msg)
 			}
@@ -45,33 +48,31 @@ func main() {
 	go func() {
 		fmt.Println("starting service export watch")
 		for serviceCommunity := range serviceExportChan {
-			fmt.Println(serviceCommunity)
-			/*
-				rp, err := serviceToRP(serviceCommunity, k8sClient)
-				if err != nil {
-					fmt.Println("cannot convert ep to rp", err)
-				}
-				if err := reconcileRP(rp, serviceCommunity, k8sClient); err != nil {
-					fmt.Println("cannot reconcile rp", err)
-				}
-			*/
+			fmt.Println("received serviceCommunity", serviceCommunity)
+
+			rp, err := serviceToRP(serviceCommunity, k8sClient)
+			if err != nil {
+				fmt.Println("cannot convert ep to rp", err)
+			}
+			if err := reconcileRP(rp, serviceCommunity, k8sClient); err != nil {
+				fmt.Println("cannot reconcile rp", err)
+			}
+
 		}
 	}()
 
 	go func() {
 		fmt.Println("starting community watch")
 		for prefixCommunity := range controlCallBackChan {
-			fmt.Println(prefixCommunity)
-			//if err := rpToServiceEndpoint(prefixCommunity, k8sClient); err != nil {
-			//	fmt.Println("cannot create service/endpoint", err)
-			//}
+			fmt.Println("received prefixCommunity", prefixCommunity)
+			if err := rpToServiceEndpoint(prefixCommunity, k8sClient); err != nil {
+				fmt.Println("cannot create service/endpoint", err)
+			}
 		}
 	}()
 
 	go k8sClient.Watch(serviceImportChan, serviceExportChan)
-	go controlClient.Watch(controlCallBackChan)
-
-	controlClient.Write(msg2)
+	go controlClient.Watch()
 
 	<-stopChan
 }
@@ -93,8 +94,6 @@ func rpToServiceEndpoint(prefixCommunity api.PrefixCommunity, k8sClient *k8s.Cli
 		protocol string
 	}]bool)
 
-	ep := &corev1.Endpoints{}
-
 	for _, svc := range svcList.Items {
 		if id, ok := svc.Annotations["service.contrail.juniper.net/import"]; ok {
 			if id == strconv.Itoa(int(communityId)) {
@@ -109,7 +108,7 @@ func rpToServiceEndpoint(prefixCommunity api.PrefixCommunity, k8sClient *k8s.Cli
 						}{port: int32(port), protocol: protocol}] = true
 					}
 				}
-				ep, err = k8sClient.KubernetesClientSet.CoreV1().Endpoints(svc.Namespace).Get(context.Background(), svc.Name, metav1.GetOptions{})
+				ep, err := k8sClient.KubernetesClientSet.CoreV1().Endpoints(svc.Namespace).Get(context.Background(), svc.Name, metav1.GetOptions{})
 				if err != nil {
 					if !errors.IsNotFound(err) {
 						return err
@@ -119,7 +118,6 @@ func rpToServiceEndpoint(prefixCommunity api.PrefixCommunity, k8sClient *k8s.Cli
 								Name:      svc.Name,
 								Namespace: svc.Namespace,
 							},
-							Subsets: []corev1.EndpointSubset{{}},
 						}, metav1.CreateOptions{})
 						if err != nil {
 							return err
@@ -141,68 +139,81 @@ func rpToServiceEndpoint(prefixCommunity api.PrefixCommunity, k8sClient *k8s.Cli
 					}
 
 				}
+				prefixList := strings.Split(prefixCommunity.Prefix, "/")
+
+				updateService := false
+				updateEndpoint := false
+
+				if ok := servicePrefixes[prefixList[0]]; !ok {
+					svc.Spec.ExternalIPs = append(svc.Spec.ExternalIPs, prefixList[0])
+					updateService = true
+				}
+				if ok := endpointPrefixes[prefixList[0]]; !ok {
+					if len(ep.Subsets) > 0 {
+						ep.Subsets[0].Addresses = append(ep.Subsets[0].Addresses, corev1.EndpointAddress{
+							IP: prefixList[0],
+						})
+					} else {
+						ep.Subsets = []corev1.EndpointSubset{{
+							Addresses: []corev1.EndpointAddress{{
+								IP: prefixList[0],
+							}},
+						}}
+					}
+					updateEndpoint = true
+				}
+
+				portProtoStruct := struct {
+					port     int32
+					protocol string
+				}{port: port, protocol: protocol}
+
+				communityIdName := strconv.Itoa(int(communityId))
+				if ok := servicePortProtocol[portProtoStruct]; !ok {
+					svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{
+						Name:     communityIdName,
+						Port:     int32(port),
+						Protocol: corev1.Protocol(protocol),
+					})
+					updateService = true
+				}
+				if ok := endpointPortProtocol[portProtoStruct]; !ok {
+					ep.Subsets[0].Ports = append(ep.Subsets[0].Ports, corev1.EndpointPort{
+						Name:     communityIdName,
+						Port:     int32(port),
+						Protocol: corev1.Protocol(protocol),
+					})
+					updateEndpoint = true
+				}
+
+				if updateService {
+					_, err := k8sClient.KubernetesClientSet.CoreV1().Services(svc.Namespace).Update(context.Background(), &svc, metav1.UpdateOptions{})
+					if err != nil {
+						return err
+					}
+				}
+				if updateEndpoint {
+					_, err := k8sClient.KubernetesClientSet.CoreV1().Endpoints(svc.Namespace).Update(context.Background(), ep, metav1.UpdateOptions{})
+					if err != nil {
+						return err
+					}
+				}
 			}
 		}
-		prefixList := strings.Split(prefixCommunity.Prefix, "/")
 
-		updateService := false
-		updateEndpoint := false
-
-		if ok := servicePrefixes[prefixList[0]]; !ok {
-			svc.Spec.ExternalIPs = append(svc.Spec.ExternalIPs, prefixList[0])
-			updateService = true
-		}
-		if ok := endpointPrefixes[prefixList[0]]; !ok {
-			ep.Subsets[0].Addresses = append(ep.Subsets[0].Addresses, corev1.EndpointAddress{
-				IP: prefixList[0],
-			})
-			updateEndpoint = true
-		}
-
-		portProtoStruct := struct {
-			port     int32
-			protocol string
-		}{port: port, protocol: protocol}
-
-		if ok := servicePortProtocol[portProtoStruct]; !ok {
-			svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{
-				Port:     int32(port),
-				Protocol: corev1.Protocol(protocol),
-			})
-			updateService = true
-		}
-		if ok := endpointPortProtocol[portProtoStruct]; !ok {
-			ep.Subsets[0].Ports = append(ep.Subsets[0].Ports, corev1.EndpointPort{
-				Port:     int32(port),
-				Protocol: corev1.Protocol(protocol),
-			})
-			updateEndpoint = true
-		}
-
-		if updateService {
-			_, err := k8sClient.KubernetesClientSet.CoreV1().Services(svc.Namespace).Update(context.Background(), &svc, metav1.UpdateOptions{})
-			if err != nil {
-				return err
-			}
-		}
-		if updateEndpoint {
-			_, err := k8sClient.KubernetesClientSet.CoreV1().Endpoints(svc.Namespace).Update(context.Background(), ep, metav1.UpdateOptions{})
-			if err != nil {
-				return err
-			}
-		}
 	}
 
 	return nil
 }
 
 func subscriptionMessage(name, namespace string) string {
+
 	return fmt.Sprintf(`<iq type="set" from="worker-3" to="network-control@contrailsystems.com/bgp-peer" id="subscribe3">
-	<pubsub xmlns="http://jabber.org/protocol/pubsub">
-	<subscribe node="default-domain:%s:%s:%s">
-	</subscribe>
-	</pubsub>
-	</iq>`, namespace, name, name)
+		<pubsub xmlns="http://jabber.org/protocol/pubsub">
+		<subscribe node="default-domain:%s:%s:%s">
+		</subscribe>
+		</pubsub>
+		</iq>`, namespace, name, name)
 }
 
 func reconcileRP(rp *ccapi.RoutingPolicy, serviceCommunity api.ServiceCommunity, k8sClient *k8s.Client) error {
