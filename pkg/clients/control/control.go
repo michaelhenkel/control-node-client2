@@ -81,6 +81,7 @@ func (c *Client) processMessage(msg string) {
 }
 
 func (c *Client) handle(message []byte) {
+	fmt.Println(string(message))
 	if message[0] == 200 && message[1] == 128 {
 		ka := []byte{message[0], message[1]}
 		c.Write(string(ka))

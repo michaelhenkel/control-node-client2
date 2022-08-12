@@ -9,6 +9,7 @@ type ServiceCommunity struct {
 }
 
 type PrefixCommunity struct {
-	Prefix    string
-	Community string
+	Prefix               string
+	Community            string
+	OriginVirtualNetwork string
 }
