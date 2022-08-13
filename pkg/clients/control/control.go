@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/michaelhenkel/control-node-client2/pkg/schema"
@@ -63,16 +64,46 @@ func (c *Client) endMessage(line string) string {
 }
 
 func (c *Client) processMessage(msg string) {
+	fmt.Println(msg)
 	msgObj := &schema.Message{}
 	if err := xml.Unmarshal([]byte(msg), msgObj); err != nil {
-		//fmt.Println("err", err)
+		fmt.Println("err", err)
 	} else {
-		for _, item := range msgObj.Event.Items.Item {
-			if item.Entry.CommunityTagList.CommunityTag != "" {
-				fmt.Printf("%s:%s:%s\n", item.Entry.VirtualNetwork, item.Entry.Nlri.Address, item.Entry.CommunityTagList.CommunityTag)
+		r, err := regexp.Compile(`\d/\d/(.*?):(.*?):(.*?):(.*?)`)
+		if err != nil {
+			fmt.Println(err)
+		}
+		var networkNamespace, networkName string
+		res := r.FindStringSubmatch(msgObj.Event.Items.Node)
+		if len(res) > 3 {
+			networkName = res[3]
+			networkNamespace = res[2]
+		}
+		if msgObj.Event.Items.Retract.ID != "" {
+			prefixList := strings.Split(msgObj.Event.Items.Retract.ID, "/")
+			if net.ParseIP(prefixList[0]).To4() != nil {
 				c.callbackChan <- api.PrefixCommunity{
-					Prefix:    item.Entry.Nlri.Address,
-					Community: item.Entry.CommunityTagList.CommunityTag,
+					Prefix:                        msgObj.Event.Items.Retract.ID,
+					Community:                     "0",
+					OriginVirtualNetworkNamespace: networkNamespace,
+					OriginVirtualNetworkName:      networkName,
+					Action:                        api.Del,
+				}
+			}
+		} else {
+			for _, item := range msgObj.Event.Items.Item {
+				prefixList := strings.Split(item.Entry.Nlri.Address, "/")
+				if net.ParseIP(prefixList[0]).To4() != nil {
+					if item.Entry.CommunityTagList.CommunityTag != "" {
+						fmt.Printf("%s:%s:%s\n", item.Entry.VirtualNetwork, item.Entry.Nlri.Address, item.Entry.CommunityTagList.CommunityTag)
+						c.callbackChan <- api.PrefixCommunity{
+							Prefix:                        item.Entry.Nlri.Address,
+							Community:                     item.Entry.CommunityTagList.CommunityTag,
+							OriginVirtualNetworkNamespace: networkNamespace,
+							OriginVirtualNetworkName:      networkName,
+							Action:                        api.Add,
+						}
+					}
 				}
 			}
 		}
@@ -81,7 +112,7 @@ func (c *Client) processMessage(msg string) {
 }
 
 func (c *Client) handle(message []byte) {
-	fmt.Println(string(message))
+	//fmt.Println(string(message))
 	if message[0] == 200 && message[1] == 128 {
 		ka := []byte{message[0], message[1]}
 		c.Write(string(ka))

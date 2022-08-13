@@ -22,15 +22,21 @@ type Event struct {
 }
 
 type Items struct {
-	Text string `xml:",chardata"`
-	Node string `xml:"node,attr"`
-	Item []Item `xml:"item"`
+	Text    string  `xml:",chardata"`
+	Node    string  `xml:"node,attr"`
+	Retract Retract `xml:"retract"`
+	Item    []Item  `xml:"item"`
 }
 
 type Item struct {
 	Text  string `xml:",chardata"`
 	ID    string `xml:"id,attr"`
 	Entry Entry  `xml:"entry"`
+}
+
+type Retract struct {
+	Text string `xml:",chardata"`
+	ID   string `xml:"id,attr"`
 }
 
 type Entry struct {

@@ -22,17 +22,12 @@ import (
 	contrailClient "ssd-git.juniper.net/contrail/cn2/contrail/pkg/client/clientset_generated/clientset"
 )
 
-type Event string
-
 const (
-	Closed         = 0
-	Add      Event = "add"
-	Update   Event = "update"
-	Del      Event = "del"
-	Added          = 1
-	Modified       = 2
-	Deleted        = 3
-	Error          = -1
+	Closed   = 0
+	Added    = 1
+	Modified = 2
+	Deleted  = 3
+	Error    = -1
 )
 
 type Client struct {
@@ -141,7 +136,7 @@ type watchHandlerFunc struct {
 	kubernetesClientSet *kubernetes.Clientset
 }
 
-func (h *watchHandlerFunc) HandleEvent(event Event, obj *unstructured.Unstructured) error {
+func (h *watchHandlerFunc) HandleEvent(event api.Action, obj *unstructured.Unstructured) error {
 
 	kind, _, err := unstructured.NestedString(obj.Object, "kind")
 	if err != nil {
@@ -159,7 +154,7 @@ func (h *watchHandlerFunc) HandleEvent(event Event, obj *unstructured.Unstructur
 }
 
 type WatchEventHandler interface {
-	HandleEvent(event Event, obj *unstructured.Unstructured) error
+	HandleEvent(event api.Action, obj *unstructured.Unstructured) error
 }
 
 func resourceEventHandler(handler WatchEventHandler) cache.ResourceEventHandler {
@@ -187,7 +182,7 @@ func resourceEventHandler(handler WatchEventHandler) cache.ResourceEventHandler 
 						fmt.Println("add", kind, name, rv)
 					}
 			*/
-			handler.HandleEvent(Add, u)
+			handler.HandleEvent(api.Add, u)
 
 		},
 		UpdateFunc: func(oldObj interface{}, newObj interface{}) {
@@ -217,12 +212,12 @@ func resourceEventHandler(handler WatchEventHandler) cache.ResourceEventHandler 
 					//fmt.Println("update", kind, name, rv, oldrv)
 				}
 			*/
-			handler.HandleEvent(Update, u)
+			handler.HandleEvent(api.Update, u)
 
 		},
 		DeleteFunc: func(obj interface{}) {
 			u := obj.(*unstructured.Unstructured)
-			handler.HandleEvent(Del, u)
+			handler.HandleEvent(api.Del, u)
 
 		},
 	}
